@@ -1,0 +1,112 @@
+name: Build & Sign Android App
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Artifacts to build'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - 'both'
+          - 'apk'
+          - 'bundle'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Sign
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Prepare environment configuration (BYOK)
+        run: |
+          # This is a BYOK (Bring Your Own Key) application.
+          # No API keys are embedded into the build artifacts.
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            touch .env
+          fi
+
+      - name: Configure Keystore for Release Signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.SIGNING_KEYSTORE_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'upload' }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Keystore secret detected. Decoding to temporary location..."
+            KEYSTORE_DIR="${{ runner.temp }}/keystore"
+            mkdir -p "$KEYSTORE_DIR"
+            KEYSTORE_FILE="$KEYSTORE_DIR/release.jks"
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            
+            echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "RELEASE_SIGNING_READY=true" >> $GITHUB_ENV
+            echo "Release keystore configured successfully."
+          else
+            echo "No release keystore secret provided. Release build will use fallback configuration."
+            echo "RELEASE_SIGNING_READY=false" >> $GITHUB_ENV
+          fi
+
+      - name: Build Release APK
+        if: ${{ github.event.inputs.build_type != 'bundle' }}
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Build Release App Bundle (AAB)
+        if: ${{ github.event.inputs.build_type != 'apk' }}
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Upload Release APK
+        if: ${{ github.event.inputs.build_type != 'bundle' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+
+      - name: Upload Release Bundle (AAB)
+        if: ${{ github.event.inputs.build_type != 'apk' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: app/build/outputs/bundle/release/*.aab
+          if-no-files-found: warn
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+          generate_release_notes: true
