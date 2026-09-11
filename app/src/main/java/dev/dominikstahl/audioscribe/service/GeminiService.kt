@@ -90,20 +90,44 @@ class GeminiService {
             var activeModel = model
             val isTranscribeModel = activeModel.contains("transcribe", ignoreCase = true)
 
-            onProgress("Building transcription payload...")
-            val jsonPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel)
+            if (isTranscribeModel) {
+                onProgress("Connecting to Gemini ($activeModel)...")
+                val jsonPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = true)
+                var result = executeGenerateContent(trimmedKey, activeModel, jsonPayload)
 
-            onProgress("Connecting to Gemini ($activeModel)...")
-            val result = executeGenerateContent(trimmedKey, activeModel, jsonPayload)
-            if (result.isFailure && result.exceptionOrNull()?.message?.contains("404") == true && activeModel != "gemini-3.8-flash") {
-                // If requested model was 404, fallback to gemini-3.8-flash
-                onProgress("Retrying with gemini-3.8-flash...")
-                activeModel = "gemini-3.8-flash"
-                val fallbackPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = false)
-                return@withContext executeGenerateContent(trimmedKey, activeModel, fallbackPayload)
+                // If generateContent fails (e.g. 400 or 404), attempt Interactions API
+                if (result.isFailure) {
+                    val errMsg = result.exceptionOrNull()?.message ?: ""
+                    Log.w(TAG, "generateContent failed for $activeModel ($errMsg), attempting Interactions API")
+                    onProgress("Connecting via Interactions API ($activeModel)...")
+                    val interactionsResult = executeInteractions(trimmedKey, activeModel, base64Data, mimeType)
+                    if (interactionsResult.isSuccess) {
+                        return@withContext interactionsResult
+                    }
+
+                    // Fallback to gemini-3.8-flash if model was completely unavailable
+                    if (activeModel != "gemini-3.8-flash") {
+                        onProgress("Retrying with gemini-3.8-flash...")
+                        activeModel = "gemini-3.8-flash"
+                        val fallbackPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = false)
+                        return@withContext executeGenerateContent(trimmedKey, activeModel, fallbackPayload)
+                    }
+                }
+                return@withContext result
+            } else {
+                onProgress("Building transcription payload...")
+                val jsonPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = false)
+
+                onProgress("Connecting to Gemini ($activeModel)...")
+                val result = executeGenerateContent(trimmedKey, activeModel, jsonPayload)
+                if (result.isFailure && result.exceptionOrNull()?.message?.contains("404") == true && activeModel != "gemini-3.8-flash") {
+                    onProgress("Retrying with gemini-3.8-flash...")
+                    activeModel = "gemini-3.8-flash"
+                    val fallbackPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = false)
+                    return@withContext executeGenerateContent(trimmedKey, activeModel, fallbackPayload)
+                }
+                return@withContext result
             }
-
-            result
         } catch (e: java.net.SocketTimeoutException) {
             Log.e(TAG, "Gemini transcription timed out", e)
             Result.failure(Exception("Transcription timed out. Gemini 3.8 Flash is recommended for fastest response."))
@@ -118,7 +142,7 @@ class GeminiService {
         }
     }
 
-    private fun executeGenerateContent(
+    internal fun executeGenerateContent(
         apiKey: String,
         model: String,
         jsonPayload: String
@@ -135,114 +159,174 @@ class GeminiService {
         val responseBody = response.body?.string() ?: ""
 
         return if (response.isSuccessful) {
-            try {
-                val json = JSONObject(responseBody)
-                val candidates = json.optJSONArray("candidates")
-                if (candidates != null && candidates.length() > 0) {
-                    val candidate = candidates.getJSONObject(0)
-                    val content = candidate.optJSONObject("content")
-                    val parts = content?.optJSONArray("parts")
-                    val sb = StringBuilder()
-                    var structuredDataJson: String? = null
-
-                    if (parts != null) {
-                        for (i in 0 until parts.length()) {
-                            val part = parts.getJSONObject(i)
-                            val text = part.optString("text")
-                            if (text.isNotEmpty()) {
-                                sb.append(text)
-                            }
-                            val audioTrans = part.optJSONObject("audio_transcription")
-                                ?: part.optJSONObject("audioTranscription")
-                            if (audioTrans != null && structuredDataJson == null) {
-                                structuredDataJson = audioTrans.toString()
-                            }
-                        }
-                    }
-
-                    if (structuredDataJson == null) {
-                        val candidateTrans = candidate.optJSONObject("audio_transcription")
-                            ?: candidate.optJSONObject("audioTranscription")
-                        if (candidateTrans != null) {
-                            structuredDataJson = candidateTrans.toString()
-                        }
-                    }
-
-                    if (structuredDataJson == null) {
-                        val rootTrans = json.optJSONObject("audio_transcription")
-                            ?: json.optJSONObject("audioTranscription")
-                        if (rootTrans != null) {
-                            structuredDataJson = rootTrans.toString()
-                        }
-                    }
-
-                    val transcript = sb.toString().trim()
-                    if (transcript.isNotEmpty()) {
-                        Result.success(
-                            GeminiTranscriptionResponse(
-                                transcript = transcript,
-                                structuredDataJson = structuredDataJson
-                            )
-                        )
-                    } else {
-                        Result.failure(Exception("Transcription returned empty response from model"))
-                    }
-                } else {
-                    Result.failure(Exception("No transcription candidates returned by Gemini"))
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to parse transcription response: $responseBody", e)
-                Result.failure(Exception("Failed to parse Gemini response: ${e.message}"))
-            }
+            parseGenerateContentResponse(responseBody)
         } else {
             val errorMsg = parseErrorMessage(response.code, responseBody)
             Result.failure(Exception(errorMsg))
         }
     }
 
-    private fun buildTranscriptionJson(
+    internal fun parseGenerateContentResponse(responseBody: String): Result<GeminiTranscriptionResponse> {
+        return try {
+            val json = JSONObject(responseBody)
+            val candidates = json.optJSONArray("candidates")
+            if (candidates != null && candidates.length() > 0) {
+                val candidate = candidates.getJSONObject(0)
+                val content = candidate.optJSONObject("content")
+                val parts = content?.optJSONArray("parts")
+                val sb = StringBuilder()
+                var structuredDataJson: String? = null
+
+                if (parts != null) {
+                    for (i in 0 until parts.length()) {
+                        val part = parts.getJSONObject(i)
+                        val text = part.optString("text")
+                        if (text.isNotEmpty()) {
+                            sb.append(text)
+                        }
+                        val audioTrans = part.optJSONObject("audio_transcription")
+                            ?: part.optJSONObject("audioTranscription")
+                        if (audioTrans != null && structuredDataJson == null) {
+                            structuredDataJson = audioTrans.toString()
+                        }
+                    }
+                }
+
+                if (structuredDataJson == null) {
+                    val candidateTrans = candidate.optJSONObject("audio_transcription")
+                        ?: candidate.optJSONObject("audioTranscription")
+                    if (candidateTrans != null) {
+                        structuredDataJson = candidateTrans.toString()
+                    }
+                }
+
+                if (structuredDataJson == null) {
+                    val rootTrans = json.optJSONObject("audio_transcription")
+                        ?: json.optJSONObject("audioTranscription")
+                    if (rootTrans != null) {
+                        structuredDataJson = rootTrans.toString()
+                    }
+                }
+
+                var transcript = sb.toString().trim()
+                if (transcript.isEmpty() && structuredDataJson != null) {
+                    val audioData = dev.dominikstahl.audioscribe.data.model.AudioTranscriptionData.fromJson(structuredDataJson)
+                    if (audioData != null && audioData.segments.isNotEmpty()) {
+                        transcript = audioData.segments.joinToString(" ") { it.text }.trim()
+                    }
+                }
+
+                if (transcript.isNotEmpty()) {
+                    Result.success(
+                        GeminiTranscriptionResponse(
+                            transcript = transcript,
+                            structuredDataJson = structuredDataJson
+                        )
+                    )
+                } else {
+                    Result.failure(Exception("Transcription returned empty response from model"))
+                }
+            } else {
+                Result.failure(Exception("No transcription candidates returned by Gemini"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse transcription response: $responseBody", e)
+            Result.failure(Exception("Failed to parse Gemini response: ${e.message}"))
+        }
+    }
+
+    internal fun executeInteractions(
+        apiKey: String,
+        model: String,
         base64Audio: String,
-        mimeType: String,
-        isTranscribeModel: Boolean = false
+        mimeType: String
+    ): Result<GeminiTranscriptionResponse> {
+        val url = "$BASE_URL/interactions?key=$apiKey"
+        val payload = buildInteractionsJson(model, base64Audio, mimeType)
+        val requestBody = payload.toRequestBody("application/json; charset=utf-8".toMediaType())
+
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
+
+        val response = okHttpClient.newCall(request).execute()
+        val responseBody = response.body?.string() ?: ""
+
+        return if (response.isSuccessful) {
+            parseInteractionsResponse(responseBody)
+        } else {
+            val errorMsg = parseErrorMessage(response.code, responseBody)
+            Result.failure(Exception(errorMsg))
+        }
+    }
+
+    internal fun parseInteractionsResponse(responseBody: String): Result<GeminiTranscriptionResponse> {
+        return try {
+            val json = JSONObject(responseBody)
+            var transcript = json.optString("output_text").trim()
+            val structuredData = dev.dominikstahl.audioscribe.data.model.AudioTranscriptionData.fromJson(responseBody)
+
+            if (transcript.isEmpty() && structuredData != null && structuredData.segments.isNotEmpty()) {
+                transcript = structuredData.segments.joinToString(" ") { it.text }.trim()
+            }
+
+            if (transcript.isEmpty()) {
+                // Fallback to step model_output text if available
+                val steps = json.optJSONArray("steps")
+                if (steps != null) {
+                    val sb = StringBuilder()
+                    for (i in 0 until steps.length()) {
+                        val step = steps.optJSONObject(i) ?: continue
+                        val content = step.optJSONArray("content") ?: continue
+                        for (c in 0 until content.length()) {
+                            val item = content.optJSONObject(c) ?: continue
+                            val t = item.optString("text")
+                            if (t.isNotBlank()) {
+                                if (sb.isNotEmpty()) sb.append(" ")
+                                sb.append(t.trim())
+                            }
+                        }
+                    }
+                    transcript = sb.toString().trim()
+                }
+            }
+
+            if (transcript.isNotEmpty()) {
+                val structuredJson = structuredData?.toJsonString()
+                Result.success(
+                    GeminiTranscriptionResponse(
+                        transcript = transcript,
+                        structuredDataJson = structuredJson
+                    )
+                )
+            } else {
+                Result.failure(Exception("Interactions API returned empty transcript"))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse interactions response: $responseBody", e)
+            Result.failure(Exception("Failed to parse interactions response: ${e.message}"))
+        }
+    }
+
+    internal fun buildInteractionsJson(
+        model: String,
+        base64Audio: String,
+        mimeType: String
     ): String {
         val root = JSONObject()
+        root.put("model", model)
 
-        // System Instruction (verbatim as mandated)
-        val systemInstruction = JSONObject()
-        val sysParts = JSONArray()
-        val sysPart = JSONObject()
-        sysPart.put("text", SYSTEM_INSTRUCTION_AUDIO)
-        sysParts.put(sysPart)
-        systemInstruction.put("parts", sysParts)
-        root.put("systemInstruction", systemInstruction)
+        val input = JSONArray()
+        val audioInput = JSONObject().apply {
+            put("type", "audio")
+            put("data", base64Audio)
+            put("mime_type", mimeType)
+        }
+        input.put(audioInput)
+        root.put("input", input)
 
-        // Contents
-        val contents = JSONArray()
-        val content = JSONObject()
-        val parts = JSONArray()
-
-        // Part 1: Inline audio
-        val audioPart = JSONObject()
-        val inlineData = JSONObject()
-        inlineData.put("mimeType", mimeType)
-        inlineData.put("data", base64Audio)
-        audioPart.put("inlineData", inlineData)
-        parts.put(audioPart)
-
-        // Part 2: Explicit prompt
-        val textPart = JSONObject()
-        textPart.put("text", "Transcribe the spoken words in the provided audio file verbatim.")
-        parts.put(textPart)
-
-        content.put("parts", parts)
-        contents.put(content)
-        root.put("contents", contents)
-
-        // Generation Config: temperature 0.0 (strictly deterministic)
-        val config = JSONObject()
-        config.put("temperature", 0.0)
-
-        if (isTranscribeModel) {
+        val generationConfig = JSONObject().apply {
             val transcriptionConfig = JSONObject().apply {
                 val mode = JSONObject().apply {
                     put("type", "verbatim")
@@ -252,23 +336,87 @@ class GeminiService {
                 }
                 put("mode", mode)
             }
-            config.put("transcription_config", transcriptionConfig)
-
-            // Also support camelCase for robustness across client parser versions
-            val transcriptionConfigCamel = JSONObject().apply {
-                val mode = JSONObject().apply {
-                    put("type", "verbatim")
-                    put("diarizationMode", "speaker")
-                    val granularities = JSONArray().apply { put("word") }
-                    put("timestampGranularities", granularities)
-                }
-                put("mode", mode)
-            }
-            config.put("transcriptionConfig", transcriptionConfigCamel)
-            root.put("generation_config", config)
+            put("transcription_config", transcriptionConfig)
         }
+        root.put("generation_config", generationConfig)
 
-        root.put("generationConfig", config)
+        return root.toString()
+    }
+
+    internal fun buildTranscriptionJson(
+        base64Audio: String,
+        mimeType: String,
+        isTranscribeModel: Boolean = false
+    ): String {
+        val root = JSONObject()
+
+        if (isTranscribeModel) {
+            // gemini-3.5-transcribe does NOT allow systemInstruction or text prompt parts in contents
+            val contents = JSONArray()
+            val content = JSONObject()
+            val parts = JSONArray()
+
+            val audioPart = JSONObject()
+            val inlineData = JSONObject()
+            inlineData.put("mimeType", mimeType)
+            inlineData.put("data", base64Audio)
+            audioPart.put("inlineData", inlineData)
+            parts.put(audioPart)
+
+            content.put("parts", parts)
+            contents.put(content)
+            root.put("contents", contents)
+
+            val config = JSONObject().apply {
+                val transcriptionConfig = JSONObject().apply {
+                    val mode = JSONObject().apply {
+                        put("type", "verbatim")
+                        put("diarization_mode", "speaker")
+                        val granularities = JSONArray().apply { put("word") }
+                        put("timestamp_granularities", granularities)
+                    }
+                    put("mode", mode)
+                }
+                put("transcription_config", transcriptionConfig)
+            }
+            root.put("generationConfig", config)
+        } else {
+            // System Instruction (verbatim as mandated for standard multimodal models)
+            val systemInstruction = JSONObject()
+            val sysParts = JSONArray()
+            val sysPart = JSONObject()
+            sysPart.put("text", SYSTEM_INSTRUCTION_AUDIO)
+            sysParts.put(sysPart)
+            systemInstruction.put("parts", sysParts)
+            root.put("systemInstruction", systemInstruction)
+
+            // Contents
+            val contents = JSONArray()
+            val content = JSONObject()
+            val parts = JSONArray()
+
+            // Part 1: Inline audio
+            val audioPart = JSONObject()
+            val inlineData = JSONObject()
+            inlineData.put("mimeType", mimeType)
+            inlineData.put("data", base64Audio)
+            audioPart.put("inlineData", inlineData)
+            parts.put(audioPart)
+
+            // Part 2: Explicit prompt
+            val textPart = JSONObject()
+            textPart.put("text", "Transcribe the spoken words in the provided audio file verbatim.")
+            parts.put(textPart)
+
+            content.put("parts", parts)
+            contents.put(content)
+            root.put("contents", contents)
+
+            // Generation Config: temperature 0.0 (strictly deterministic)
+            val config = JSONObject()
+            config.put("temperature", 0.0)
+            root.put("generationConfig", config)
+        }
 
         return root.toString()
     }

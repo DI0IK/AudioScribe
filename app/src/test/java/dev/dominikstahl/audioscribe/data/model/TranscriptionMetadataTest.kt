@@ -158,4 +158,150 @@ class TranscriptionMetadataTest {
         assertEquals(seg1.text, reparsed.segments[0].text)
         assertEquals(seg2.text, reparsed.segments[1].text)
     }
+
+    @Test
+    fun `test build transcription json for gemini-3_5-transcribe`() {
+        val service = dev.dominikstahl.audioscribe.service.GeminiService()
+        val jsonStr = service.buildTranscriptionJson("dGVzdA==", "audio/mp4", isTranscribeModel = true)
+        val json = org.json.JSONObject(jsonStr)
+
+        // Must NOT have systemInstruction (HTTP 400 rejection in gemini-3.5-transcribe)
+        org.junit.Assert.assertFalse(json.has("systemInstruction"))
+
+        // Contents must have exactly 1 part (audio inlineData) and NO text parts
+        val contents = json.getJSONArray("contents")
+        assertEquals(1, contents.length())
+        val parts = contents.getJSONObject(0).getJSONArray("parts")
+        assertEquals(1, parts.length())
+        val inlineData = parts.getJSONObject(0).getJSONObject("inlineData")
+        assertEquals("audio/mp4", inlineData.getString("mimeType"))
+        assertEquals("dGVzdA==", inlineData.getString("data"))
+
+        // Generation config must contain transcription_config and NO temperature
+        val genConfig = json.getJSONObject("generationConfig")
+        org.junit.Assert.assertFalse(genConfig.has("temperature"))
+        assertTrue(genConfig.has("transcription_config"))
+        val transConfig = genConfig.getJSONObject("transcription_config")
+        val mode = transConfig.getJSONObject("mode")
+        assertEquals("verbatim", mode.getString("type"))
+        assertEquals("speaker", mode.getString("diarization_mode"))
+        val granularities = mode.getJSONArray("timestamp_granularities")
+        assertEquals(1, granularities.length())
+        assertEquals("word", granularities.getString(0))
+    }
+
+    @Test
+    fun `test build transcription json for standard multimodal model`() {
+        val service = dev.dominikstahl.audioscribe.service.GeminiService()
+        val jsonStr = service.buildTranscriptionJson("dGVzdA==", "audio/mp4", isTranscribeModel = false)
+        val json = org.json.JSONObject(jsonStr)
+
+        // Must have systemInstruction
+        assertTrue(json.has("systemInstruction"))
+
+        // Contents must have 2 parts: audio inlineData and text prompt
+        val contents = json.getJSONArray("contents")
+        val parts = contents.getJSONObject(0).getJSONArray("parts")
+        assertEquals(2, parts.length())
+        assertTrue(parts.getJSONObject(0).has("inlineData"))
+        assertTrue(parts.getJSONObject(1).has("text"))
+
+        // Generation config must have temperature 0.0
+        val genConfig = json.getJSONObject("generationConfig")
+        assertEquals(0.0, genConfig.getDouble("temperature"), 0.001)
+        org.junit.Assert.assertFalse(genConfig.has("transcription_config"))
+    }
+
+    @Test
+    fun `test build interactions json for transcribe model`() {
+        val service = dev.dominikstahl.audioscribe.service.GeminiService()
+        val jsonStr = service.buildInteractionsJson("gemini-3.5-transcribe", "dGVzdA==", "audio/mp4")
+        val json = org.json.JSONObject(jsonStr)
+
+        assertEquals("gemini-3.5-transcribe", json.getString("model"))
+        val input = json.getJSONArray("input")
+        assertEquals(1, input.length())
+        val audioInput = input.getJSONObject(0)
+        assertEquals("audio", audioInput.getString("type"))
+        assertEquals("audio/mp4", audioInput.getString("mime_type"))
+        assertEquals("dGVzdA==", audioInput.getString("data"))
+
+        val genConfig = json.getJSONObject("generation_config")
+        assertTrue(genConfig.has("transcription_config"))
+    }
+
+    @Test
+    fun `test parse interactions api response with word_info annotations`() {
+        val service = dev.dominikstahl.audioscribe.service.GeminiService()
+        val interactionsPayload = """
+        {
+          "id": "interactions/test_123",
+          "status": "completed",
+          "output_text": "Hello world from Gemini",
+          "steps": [
+            {
+              "id": "step_001",
+              "type": "model_output",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello world from Gemini",
+                  "annotations": [
+                    {
+                      "type": "word_info",
+                      "text": "Hello",
+                      "speaker": "spk_1",
+                      "start_offset": "0.100s",
+                      "end_offset": "0.450s"
+                    },
+                    {
+                      "type": "word_info",
+                      "text": "world",
+                      "speaker": "spk_1",
+                      "start_offset": "0.500s",
+                      "end_offset": "0.850s"
+                    },
+                    {
+                      "type": "word_info",
+                      "text": "from",
+                      "speaker": "spk_2",
+                      "start_offset": "1.000s",
+                      "end_offset": "1.300s"
+                    },
+                    {
+                      "type": "word_info",
+                      "text": "Gemini",
+                      "speaker": "spk_2",
+                      "start_offset": "1.350s",
+                      "end_offset": "1.800s"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """.trimIndent()
+
+        val result = service.parseInteractionsResponse(interactionsPayload)
+        assertTrue(result.isSuccess)
+        val response = result.getOrThrow()
+        assertEquals("Hello world from Gemini", response.transcript)
+        assertNotNull(response.structuredDataJson)
+
+        val metadata = AudioTranscriptionData.fromJson(response.structuredDataJson)
+        assertNotNull(metadata)
+        assertEquals(4, metadata!!.words.size)
+        // Grouped by speakers spk_1 and spk_2
+        assertEquals(2, metadata.segments.size)
+        assertEquals("spk_1", metadata.segments[0].speakerLabel)
+        assertEquals("Hello world", metadata.segments[0].text)
+        assertEquals(100L, metadata.segments[0].startOffsetMs)
+        assertEquals(850L, metadata.segments[0].endOffsetMs)
+
+        assertEquals("spk_2", metadata.segments[1].speakerLabel)
+        assertEquals("from Gemini", metadata.segments[1].text)
+        assertEquals(1000L, metadata.segments[1].startOffsetMs)
+        assertEquals(1800L, metadata.segments[1].endOffsetMs)
+    }
 }

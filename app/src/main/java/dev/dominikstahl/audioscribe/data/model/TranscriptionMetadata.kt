@@ -95,15 +95,34 @@ data class AudioTranscriptionData(
             val segmentsList = mutableListOf<TranscriptSegment>()
             val wordsList = mutableListOf<TranscriptWord>()
 
-            val wordsArray = json.optJSONArray("words")
+            // Support both "words" and "annotations"
+            val wordsArray = json.optJSONArray("words") ?: json.optJSONArray("annotations")
             if (wordsArray != null) {
                 for (i in 0 until wordsArray.length()) {
                     val wordObj = wordsArray.optJSONObject(i) ?: continue
-                    val word = wordObj.optString("word")
-                    val start = parseOffsetToMs(wordObj.optString("start_offset"))
-                    val end = parseOffsetToMs(wordObj.optString("end_offset"))
-                    val spk = wordObj.optString("speaker_label").takeIf { it.isNotBlank() }
-                    wordsList.add(TranscriptWord(word = word, startOffsetMs = start, endOffsetMs = end, speakerLabel = spk))
+                    val word = (wordObj.optString("word").ifEmpty { wordObj.optString("text") }).trim()
+                    if (word.isEmpty()) continue
+
+                    val start = parseOffsetToMs(
+                        wordObj.optString("start_offset").ifEmpty { wordObj.optString("startOffset") }
+                    )
+                    val end = parseOffsetToMs(
+                        wordObj.optString("end_offset").ifEmpty { wordObj.optString("endOffset") }
+                    )
+                    val spk = (wordObj.optString("speaker_label").ifEmpty {
+                        wordObj.optString("speaker").ifEmpty {
+                            wordObj.optString("speakerLabel")
+                        }
+                    }).takeIf { it.isNotBlank() }
+
+                    wordsList.add(
+                        TranscriptWord(
+                            word = word,
+                            startOffsetMs = start,
+                            endOffsetMs = end,
+                            speakerLabel = spk
+                        )
+                    )
                 }
             }
 
@@ -111,9 +130,17 @@ data class AudioTranscriptionData(
             if (segmentsArray != null) {
                 for (i in 0 until segmentsArray.length()) {
                     val segObj = segmentsArray.optJSONObject(i) ?: continue
-                    val spk = segObj.optString("speaker_label", "spk_1")
-                    val start = parseOffsetToMs(segObj.optString("start_offset"))
-                    val end = parseOffsetToMs(segObj.optString("end_offset"))
+                    val spk = segObj.optString("speaker_label").ifEmpty {
+                        segObj.optString("speaker").ifEmpty {
+                            segObj.optString("speakerLabel", "spk_1")
+                        }
+                    }
+                    val start = parseOffsetToMs(
+                        segObj.optString("start_offset").ifEmpty { segObj.optString("startOffset") }
+                    )
+                    val end = parseOffsetToMs(
+                        segObj.optString("end_offset").ifEmpty { segObj.optString("endOffset") }
+                    )
                     val text = segObj.optString("text")
 
                     // Associate words belonging to this segment if available
@@ -133,6 +160,48 @@ data class AudioTranscriptionData(
                 }
             }
 
+            // Synthesize segments if only words were provided (e.g. from Interactions API word_info)
+            if (segmentsList.isEmpty() && wordsList.isNotEmpty()) {
+                var currentSpeaker = wordsList.first().speakerLabel ?: "spk_1"
+                var currentStart = wordsList.first().startOffsetMs
+                var currentEnd = wordsList.first().endOffsetMs
+                val currentWords = mutableListOf<TranscriptWord>()
+
+                for (w in wordsList) {
+                    val spk = w.speakerLabel ?: "spk_1"
+                    if (spk == currentSpeaker) {
+                        currentWords.add(w)
+                        currentEnd = maxOf(currentEnd, w.endOffsetMs)
+                    } else {
+                        segmentsList.add(
+                            TranscriptSegment(
+                                speakerLabel = currentSpeaker,
+                                startOffsetMs = currentStart,
+                                endOffsetMs = currentEnd,
+                                text = currentWords.joinToString(" ") { it.word },
+                                words = currentWords.toList()
+                            )
+                        )
+                        currentSpeaker = spk
+                        currentStart = w.startOffsetMs
+                        currentEnd = w.endOffsetMs
+                        currentWords.clear()
+                        currentWords.add(w)
+                    }
+                }
+                if (currentWords.isNotEmpty()) {
+                    segmentsList.add(
+                        TranscriptSegment(
+                            speakerLabel = currentSpeaker,
+                            startOffsetMs = currentStart,
+                            endOffsetMs = currentEnd,
+                            text = currentWords.joinToString(" ") { it.word },
+                            words = currentWords.toList()
+                        )
+                    )
+                }
+            }
+
             return AudioTranscriptionData(segments = segmentsList, words = wordsList)
         }
 
@@ -140,14 +209,39 @@ data class AudioTranscriptionData(
             if (jsonString.isNullOrBlank()) return null
             return try {
                 val json = JSONObject(jsonString)
-                val targetJson = if (json.has("audio_transcription")) {
-                    json.getJSONObject("audio_transcription")
-                } else {
-                    json
+                val targetJson = when {
+                    json.has("audio_transcription") -> json.getJSONObject("audio_transcription")
+                    json.has("audioTranscription") -> json.getJSONObject("audioTranscription")
+                    json.has("steps") -> parseInteractionsSteps(json)
+                    else -> json
                 }
                 fromJsonObject(targetJson)
             } catch (e: Exception) {
                 null
+            }
+        }
+
+        private fun parseInteractionsSteps(rootJson: JSONObject): JSONObject {
+            val wordsArray = JSONArray()
+            val steps = rootJson.optJSONArray("steps")
+            if (steps != null) {
+                for (i in 0 until steps.length()) {
+                    val step = steps.optJSONObject(i) ?: continue
+                    val contents = step.optJSONArray("content") ?: continue
+                    for (c in 0 until contents.length()) {
+                        val content = contents.optJSONObject(c) ?: continue
+                        val annotations = content.optJSONArray("annotations") ?: continue
+                        for (a in 0 until annotations.length()) {
+                            val anno = annotations.optJSONObject(a) ?: continue
+                            if (anno.optString("type") == "word_info") {
+                                wordsArray.put(anno)
+                            }
+                        }
+                    }
+                }
+            }
+            return JSONObject().apply {
+                put("words", wordsArray)
             }
         }
     }
