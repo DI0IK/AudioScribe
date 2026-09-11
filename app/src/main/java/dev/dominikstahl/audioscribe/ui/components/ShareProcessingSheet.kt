@@ -56,6 +56,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dominikstahl.audioscribe.ui.TranscriptionUiState
 import dev.dominikstahl.audioscribe.util.AudioFileManager
+import dev.dominikstahl.audioscribe.util.AudioMetadata
 import dev.dominikstahl.audioscribe.util.AudioPlayerManager
 import dev.dominikstahl.audioscribe.util.SpeechSynthesizerManager
 
@@ -82,11 +84,13 @@ fun ShareProcessingSheet(
     state: TranscriptionUiState,
     audioPlayer: AudioPlayerManager,
     speechSynthesizer: SpeechSynthesizerManager,
+    onStartTranscription: ((AudioMetadata) -> Unit)? = null,
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
     onOpenKeyDialog: () -> Unit,
     onRetry: () -> Unit,
     onRetryFallback: (() -> Unit)? = null,
+    onOpenMainApp: (() -> Unit)? = null,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 ) {
     val context = LocalContext.current
@@ -124,7 +128,7 @@ fun ShareProcessingSheet(
             when (state) {
                 is TranscriptionUiState.Preparing -> {
                     ProcessingHeader(
-                        title = "Incoming Audio Shared",
+                        title = "Reading Shared Audio...",
                         subtitle = state.fileName
                     )
                     WaveformPulsingAnimation()
@@ -140,6 +144,170 @@ fun ShareProcessingSheet(
                             .testTag("cancel_processing_button")
                     ) {
                         Text("Cancel")
+                    }
+                }
+
+                is TranscriptionUiState.Ready -> {
+                    ProcessingHeader(
+                        title = "Shared Audio Ready",
+                        subtitle = "${state.metadata.fileName} • ${AudioFileManager.formatFileSize(state.metadata.sizeBytes)}"
+                    )
+
+                    // Audio preview player card
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                                .fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Audiotrack,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = state.metadata.fileName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = if (state.metadata.durationMs > 0) {
+                                            "Duration: ${AudioFileManager.formatDuration(state.metadata.durationMs)}"
+                                        } else {
+                                            "Audio format: ${state.metadata.mimeType}"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // Preview playback toggle
+                            FilledTonalButton(
+                                onClick = {
+                                    speechSynthesizer.stop()
+                                    audioPlayer.playOrPause(state.metadata.file)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("ready_preview_audio_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (playbackState.isPlaying) "Pause preview" else "Play preview",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (playbackState.isPlaying) "Pause" else "Preview", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    // Engine / Model info badge
+                    Surface(
+                        color = if (state.isFallback) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (state.isFallback) Icons.Default.RecordVoiceOver else Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = if (state.isFallback) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (state.isFallback) "Engine: On-Device Speech Fallback" else "Model: ${state.modelName}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (state.isFallback) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (state.isFallback) "Transcribing locally with device speech recognition" else "Ready to transcribe verbatim with Gemini AI",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Primary Action: User manually starts transcription
+                    Button(
+                        onClick = {
+                            audioPlayer.stop()
+                            onStartTranscription?.invoke(state.metadata)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .testTag("start_transcription_button"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Start Transcription",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            audioPlayer.stop()
+                            onCancel()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("cancel_ready_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+
+                    if (onOpenMainApp != null) {
+                        TextButton(
+                            onClick = {
+                                audioPlayer.stop()
+                                onOpenMainApp()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("open_in_app_ready_button")
+                        ) {
+                            Text("Open in AudioScribe App")
+                        }
                     }
                 }
 
@@ -364,6 +532,16 @@ fun ShareProcessingSheet(
                             }
                         }
 
+                        OutlinedButton(
+                            onClick = onOpenKeyDialog,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Key, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Configure API Key / Change Model")
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -413,6 +591,20 @@ fun ShareProcessingSheet(
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )
+                                if (state.isCached) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer
+                                    ) {
+                                        Text(
+                                            text = "Cached",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
                             Text(
                                 text = "${state.metadata.fileName} • ${state.modelUsed}",
@@ -563,6 +755,20 @@ fun ShareProcessingSheet(
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("Dismiss / Close")
+                    }
+
+                    if (onOpenMainApp != null) {
+                        TextButton(
+                            onClick = {
+                                speechSynthesizer.stop()
+                                onOpenMainApp()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("open_in_app_completed_button")
+                        ) {
+                            Text("Open in AudioScribe App")
+                        }
                     }
                 }
 

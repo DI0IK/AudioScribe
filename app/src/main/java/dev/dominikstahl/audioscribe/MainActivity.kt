@@ -33,17 +33,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Badge
@@ -121,14 +118,12 @@ class MainActivity : ComponentActivity() {
         val type = intent.type
 
         if (Intent.ACTION_SEND == action && type != null) {
-            val streamUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+            val shareIntent = Intent(intent).apply {
+                setClass(this@MainActivity, ShareReceiverActivity::class.java)
             }
-            if (streamUri != null) {
-                viewModel.handleIncomingAudioUri(streamUri)
-            }
+            startActivity(shareIntent)
+            finish()
+            return
         } else if (Intent.ACTION_VIEW == action) {
             intent.data?.let { viewModel.handleIncomingAudioUri(it) }
         }
@@ -148,8 +143,6 @@ fun MainAppScreen(
     val historyRecords by viewModel.historyRecords.collectAsState()
     val selectedHistoryRecord by viewModel.selectedHistoryRecord.collectAsState()
     val isSpeaking by viewModel.speechSynthesizer.isSpeaking.collectAsState()
-
-    var showHelp by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -202,25 +195,7 @@ fun MainAppScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { showHelp = !showHelp },
-                        modifier = Modifier.testTag("help_tips_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.HelpOutline,
-                            contentDescription = "Share instructions"
-                        )
-                    }
-                    IconButton(
-                        onClick = { viewModel.openKeyDialog() },
-                        modifier = Modifier.testTag("settings_key_button")
-                    ) {
-                        Icon(
-                            imageVector = if (hasKey) Icons.Default.CheckCircle else Icons.Default.Settings,
-                            contentDescription = "API Key & Fallback Settings",
-                            tint = if (hasKey) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    // Cleaned up: removed help question mark and status checkmark icons as requested
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -416,18 +391,6 @@ fun MainAppScreen(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    if (historyRecords.isNotEmpty()) {
-                        IconButton(
-                            onClick = { viewModel.clearAllHistory() },
-                            modifier = Modifier.testTag("clear_all_history_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ClearAll,
-                                contentDescription = "Clear all history",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
                 }
             }
 
@@ -472,6 +435,9 @@ fun MainAppScreen(
             state = transcriptionState,
             audioPlayer = viewModel.audioPlayer,
             speechSynthesizer = viewModel.speechSynthesizer,
+            onStartTranscription = { metadata ->
+                viewModel.startTranscriptionForMetadata(metadata)
+            },
             onCancel = { viewModel.cancelTranscription() },
             onDismiss = { viewModel.dismissResult() },
             onOpenKeyDialog = { viewModel.openKeyDialog() },

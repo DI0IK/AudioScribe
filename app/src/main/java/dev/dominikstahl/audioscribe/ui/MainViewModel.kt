@@ -2,6 +2,7 @@ package dev.dominikstahl.audioscribe.ui
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.dominikstahl.audioscribe.data.db.AppDatabase
@@ -24,6 +25,12 @@ import kotlinx.coroutines.launch
 sealed class TranscriptionUiState {
     object Idle : TranscriptionUiState()
 
+    data class Ready(
+        val metadata: AudioMetadata,
+        val isFallback: Boolean = false,
+        val modelName: String = ""
+    ) : TranscriptionUiState()
+
     data class KeyRequired(val metadata: AudioMetadata) : TranscriptionUiState()
 
     data class Preparing(val fileName: String) : TranscriptionUiState()
@@ -38,7 +45,8 @@ sealed class TranscriptionUiState {
         val metadata: AudioMetadata,
         val transcript: String,
         val recordId: Long,
-        val modelUsed: String
+        val modelUsed: String,
+        val isCached: Boolean = false
     ) : TranscriptionUiState()
 
     data class Error(
@@ -111,12 +119,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _transcriptionState.value = TranscriptionUiState.Preparing("Reading shared audio...")
             val result = AudioFileManager.processIncomingAudioUri(context, uri)
             result.onSuccess { metadata ->
-                if (secureKeyManager.hasApiKey()) {
-                    executeTranscription(metadata, useFallback = false)
-                } else {
-                    // Fallback mode if no API key is configured
-                    executeTranscription(metadata, useFallback = true)
-                }
+                val hasKey = secureKeyManager.hasApiKey()
+                val model = if (hasKey) secureKeyManager.getSelectedModel() else OnDeviceSpeechService.MODEL_NAME
+                _transcriptionState.value = TranscriptionUiState.Ready(
+                    metadata = metadata,
+                    isFallback = !hasKey,
+                    modelName = model
+                )
             }.onFailure { error ->
                 _transcriptionState.value = TranscriptionUiState.Error(
                     metadata = null,
@@ -126,14 +135,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startTranscriptionForMetadata(metadata: AudioMetadata, forceFallback: Boolean = false) {
+    fun startTranscriptionForMetadata(metadata: AudioMetadata, forceFallback: Boolean = false, bypassCache: Boolean = false) {
         val useFallback = forceFallback || !secureKeyManager.hasApiKey()
-        executeTranscription(metadata, useFallback = useFallback)
+        executeTranscription(metadata, useFallback = useFallback, bypassCache = bypassCache)
     }
 
-    private fun executeTranscription(metadata: AudioMetadata, useFallback: Boolean) {
+    private fun executeTranscription(metadata: AudioMetadata, useFallback: Boolean, bypassCache: Boolean = false) {
         transcriptionJob?.cancel()
         transcriptionJob = viewModelScope.launch {
+            // Check cache by SHA-256 audio hash so identical audio is never re-transcribed needlessly
+            if (!bypassCache && metadata.fileHash.isNotBlank()) {
+                val cached = dao.findByAudioHash(metadata.fileHash)
+                if (cached != null) {
+                    Log.d("MainViewModel", "Cache hit for audio hash: ${metadata.fileHash}")
+                    _transcriptionState.value = TranscriptionUiState.Completed(
+                        metadata = metadata,
+                        transcript = cached.transcript,
+                        recordId = cached.id,
+                        modelUsed = cached.modelUsed,
+                        isCached = true
+                    )
+                    return@launch
+                }
+            }
+
             if (useFallback) {
                 // On-device speech recognition fallback mode
                 _transcriptionState.value = TranscriptionUiState.Processing(
@@ -161,7 +186,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mimeType = metadata.mimeType,
                         transcript = transcript,
                         modelUsed = OnDeviceSpeechService.MODEL_NAME,
-                        localFilePath = metadata.file.absolutePath
+                        localFilePath = metadata.file.absolutePath,
+                        audioHash = metadata.fileHash
                     )
                     val newId = dao.insertTranscription(record)
 
@@ -169,7 +195,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         metadata = metadata,
                         transcript = transcript,
                         recordId = newId,
-                        modelUsed = OnDeviceSpeechService.MODEL_NAME
+                        modelUsed = OnDeviceSpeechService.MODEL_NAME,
+                        isCached = false
                     )
                 }.onFailure { error ->
                     _transcriptionState.value = TranscriptionUiState.Error(
@@ -184,7 +211,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val key = secureKeyManager.getApiKey()
                 if (key.isNullOrBlank()) {
                     // If key was removed mid-way, fallback to on-device speech engine
-                    executeTranscription(metadata, useFallback = true)
+                    executeTranscription(metadata, useFallback = true, bypassCache = bypassCache)
                     return@launch
                 }
 
@@ -218,7 +245,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         mimeType = metadata.mimeType,
                         transcript = transcript,
                         modelUsed = model,
-                        localFilePath = metadata.file.absolutePath
+                        localFilePath = metadata.file.absolutePath,
+                        audioHash = metadata.fileHash
                     )
                     val newId = dao.insertTranscription(record)
 
@@ -226,7 +254,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         metadata = metadata,
                         transcript = transcript,
                         recordId = newId,
-                        modelUsed = model
+                        modelUsed = model,
+                        isCached = false
                     )
                 }.onFailure { error ->
                     _transcriptionState.value = TranscriptionUiState.Error(

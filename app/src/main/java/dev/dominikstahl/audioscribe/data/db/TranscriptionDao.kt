@@ -16,6 +16,9 @@ interface TranscriptionDao {
     @Query("SELECT * FROM transcriptions WHERE id = :id")
     suspend fun getTranscriptionById(id: Long): TranscriptionRecord?
 
+    @Query("SELECT * FROM transcriptions WHERE audioHash = :audioHash AND audioHash != '' ORDER BY timestamp DESC LIMIT 1")
+    suspend fun findByAudioHash(audioHash: String): TranscriptionRecord?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTranscription(record: TranscriptionRecord): Long
 

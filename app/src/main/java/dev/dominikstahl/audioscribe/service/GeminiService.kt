@@ -26,9 +26,10 @@ class GeminiService {
     }
 
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(90, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
-        .writeTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
+        .writeTimeout(180, TimeUnit.SECONDS)
+        .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -89,17 +90,25 @@ class GeminiService {
             var activeModel = model
 
             val result = executeGenerateContent(trimmedKey, activeModel, jsonPayload)
-            if (result.isFailure && result.exceptionOrNull()?.message?.contains("404") == true && activeModel != "gemini-2.5-flash") {
-                // If requested model was 404 (e.g. deprecated gemini-1.5-flash), fallback to gemini-2.5-flash
-                onProgress("Retrying with gemini-2.5-flash...")
-                activeModel = "gemini-2.5-flash"
+            if (result.isFailure && result.exceptionOrNull()?.message?.contains("404") == true && activeModel != "gemini-3.8-flash") {
+                // If requested model was 404, fallback to gemini-3.8-flash
+                onProgress("Retrying with gemini-3.8-flash...")
+                activeModel = "gemini-3.8-flash"
                 return@withContext executeGenerateContent(trimmedKey, activeModel, jsonPayload)
             }
 
             result
+        } catch (e: java.net.SocketTimeoutException) {
+            Log.e(TAG, "Gemini transcription timed out", e)
+            Result.failure(Exception("Transcription timed out. Gemini 3.8 Flash is recommended for fastest response."))
         } catch (e: Exception) {
             Log.e(TAG, "Transcription failed", e)
-            Result.failure(e)
+            val friendlyMsg = if (e.message?.contains("timeout", ignoreCase = true) == true) {
+                "Transcription request timed out. Please try Gemini 3.8 Flash."
+            } else {
+                e.localizedMessage ?: "Unknown transcription error"
+            }
+            Result.failure(Exception(friendlyMsg, e))
         }
     }
 

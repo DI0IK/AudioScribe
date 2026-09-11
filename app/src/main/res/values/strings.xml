@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">AudioScribe</string>
+    <string name="transcribe_with_audioscribe">Transcribe with AudioScribe</string>
 </resources>

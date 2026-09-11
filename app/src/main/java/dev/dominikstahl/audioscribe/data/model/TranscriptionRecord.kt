@@ -14,5 +14,6 @@ data class TranscriptionRecord(
     val mimeType: String,
     val transcript: String,
     val modelUsed: String,
-    val localFilePath: String? = null
+    val localFilePath: String? = null,
+    val audioHash: String = ""
 )

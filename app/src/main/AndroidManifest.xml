@@ -34,7 +34,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
 
+        <!-- Translucent Share Target Activity: Displays only the slide-in bottom sheet over the sharing app -->
+        <activity
+            android:name=".ShareReceiverActivity"
+            android:exported="true"
+            android:label="@string/transcribe_with_audioscribe"
+            android:theme="@style/Theme.AudioScribe.Translucent"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:windowSoftInputMode="adjustResize">
             <!-- Android Share Target Integration for audio files -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

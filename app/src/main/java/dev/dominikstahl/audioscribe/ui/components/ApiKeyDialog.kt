@@ -244,9 +244,12 @@ fun ApiKeyDialog(
                                         Text(model, fontWeight = FontWeight.Medium)
                                         Text(
                                             when (model) {
-                                                "gemini-2.5-flash" -> "Recommended: Fast & exact audio transcription"
-                                                "gemini-3.5-flash" -> "Advanced multimodal flash model"
-                                                "gemini-1.5-flash" -> "Legacy model (may be sunset in some regions)"
+                                                "gemini-3.8-flash" -> "Recommended: Ultra-fast transcription & low latency"
+                                                "gemini-3.7-flash" -> "Advanced multimodal flash model"
+                                                "gemini-3.6-flash" -> "High throughput audio processing"
+                                                "gemini-3.5-flash" -> "Reliable multimodal flash model"
+                                                "gemini-3.5-flash-lite" -> "Cost-efficient lightweight audio transcription"
+                                                "gemini-3.5-transcribe" -> "Specialized audio speech-to-text model"
                                                 else -> ""
                                             },
                                             fontSize = 11.sp,

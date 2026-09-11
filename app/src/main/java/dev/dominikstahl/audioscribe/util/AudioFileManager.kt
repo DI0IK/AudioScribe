@@ -6,8 +6,10 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.security.MessageDigest
 import java.util.Locale
 
 data class AudioMetadata(
@@ -15,7 +17,8 @@ data class AudioMetadata(
     val fileName: String,
     val mimeType: String,
     val sizeBytes: Long,
-    val durationMs: Long
+    val durationMs: Long,
+    val fileHash: String = ""
 )
 
 object AudioFileManager {
@@ -74,13 +77,17 @@ object AudioFileManager {
             // 5. Extract duration if possible
             val durationMs = extractDurationMs(context, tempFile)
 
+            // 6. Compute SHA-256 file hash for deduplication/caching
+            val fileHash = computeSha256(tempFile)
+
             Result.success(
                 AudioMetadata(
                     file = tempFile,
                     fileName = fileName,
                     mimeType = resolvedMime,
                     sizeBytes = sizeBytes,
-                    durationMs = durationMs
+                    durationMs = durationMs,
+                    fileHash = fileHash
                 )
             )
         } catch (e: Exception) {
@@ -199,6 +206,26 @@ object AudioFileManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear audio cache", e)
+        }
+    }
+
+    /**
+     * Computes SHA-256 hex digest of a file to detect duplicates and prevent re-transcription.
+     */
+    fun computeSha256(file: File): String {
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(8192)
+            FileInputStream(file).use { input ->
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to compute SHA-256 hash for ${file.name}", e)
+            ""
         }
     }
 }
