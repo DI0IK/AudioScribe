@@ -29,7 +29,7 @@ class SecureKeyManager(context: Context) {
         private const val GCM_TAG_LENGTH = 128
         private const val GCM_IV_LENGTH = 12
 
-        const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
+        const val DEFAULT_MODEL = "gemini-3.8-flash"
         val AVAILABLE_MODELS = listOf(
             "gemini-3.5-flash-lite",
             "gemini-3.5-flash",

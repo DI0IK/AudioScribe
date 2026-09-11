@@ -15,5 +15,6 @@ data class TranscriptionRecord(
     val transcript: String,
     val modelUsed: String,
     val localFilePath: String? = null,
-    val audioHash: String = ""
+    val audioHash: String = "",
+    val structuredDataJson: String? = null
 )

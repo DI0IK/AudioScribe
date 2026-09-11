@@ -2,8 +2,6 @@ package dev.dominikstahl.audioscribe.service
 
 import android.util.Base64
 import android.util.Log
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -14,6 +12,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+
+data class GeminiTranscriptionResponse(
+    val transcript: String,
+    val structuredDataJson: String? = null
+)
 
 class GeminiService {
 
@@ -65,6 +68,7 @@ class GeminiService {
 
     /**
      * Transcribes audio using Gemini API with temperature 0.0 and verbatim system instruction.
+     * Supports verbatim mode, speaker diarization, and word timestamps when using transcribe models.
      */
     suspend fun transcribeAudio(
         apiKey: String,
@@ -72,7 +76,7 @@ class GeminiService {
         audioFile: File,
         mimeType: String,
         onProgress: (String) -> Unit = {}
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): Result<GeminiTranscriptionResponse> = withContext(Dispatchers.IO) {
         val trimmedKey = apiKey.trim()
         if (trimmedKey.isEmpty()) {
             return@withContext Result.failure(Exception("Gemini API key is not configured. Please enter your API key in Settings."))
@@ -83,18 +87,20 @@ class GeminiService {
             val audioBytes = audioFile.readBytes()
             val base64Data = Base64.encodeToString(audioBytes, Base64.NO_WRAP)
 
-            onProgress("Building transcription payload...")
-            val jsonPayload = buildTranscriptionJson(base64Data, mimeType)
-
-            onProgress("Connecting to Gemini ($model)...")
             var activeModel = model
+            val isTranscribeModel = activeModel.contains("transcribe", ignoreCase = true)
 
+            onProgress("Building transcription payload...")
+            val jsonPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel)
+
+            onProgress("Connecting to Gemini ($activeModel)...")
             val result = executeGenerateContent(trimmedKey, activeModel, jsonPayload)
             if (result.isFailure && result.exceptionOrNull()?.message?.contains("404") == true && activeModel != "gemini-3.8-flash") {
                 // If requested model was 404, fallback to gemini-3.8-flash
                 onProgress("Retrying with gemini-3.8-flash...")
                 activeModel = "gemini-3.8-flash"
-                return@withContext executeGenerateContent(trimmedKey, activeModel, jsonPayload)
+                val fallbackPayload = buildTranscriptionJson(base64Data, mimeType, isTranscribeModel = false)
+                return@withContext executeGenerateContent(trimmedKey, activeModel, fallbackPayload)
             }
 
             result
@@ -116,7 +122,7 @@ class GeminiService {
         apiKey: String,
         model: String,
         jsonPayload: String
-    ): Result<String> {
+    ): Result<GeminiTranscriptionResponse> {
         val url = "$BASE_URL/models/$model:generateContent?key=$apiKey"
         val requestBody = jsonPayload.toRequestBody("application/json; charset=utf-8".toMediaType())
 
@@ -137,6 +143,8 @@ class GeminiService {
                     val content = candidate.optJSONObject("content")
                     val parts = content?.optJSONArray("parts")
                     val sb = StringBuilder()
+                    var structuredDataJson: String? = null
+
                     if (parts != null) {
                         for (i in 0 until parts.length()) {
                             val part = parts.getJSONObject(i)
@@ -144,11 +152,38 @@ class GeminiService {
                             if (text.isNotEmpty()) {
                                 sb.append(text)
                             }
+                            val audioTrans = part.optJSONObject("audio_transcription")
+                                ?: part.optJSONObject("audioTranscription")
+                            if (audioTrans != null && structuredDataJson == null) {
+                                structuredDataJson = audioTrans.toString()
+                            }
                         }
                     }
+
+                    if (structuredDataJson == null) {
+                        val candidateTrans = candidate.optJSONObject("audio_transcription")
+                            ?: candidate.optJSONObject("audioTranscription")
+                        if (candidateTrans != null) {
+                            structuredDataJson = candidateTrans.toString()
+                        }
+                    }
+
+                    if (structuredDataJson == null) {
+                        val rootTrans = json.optJSONObject("audio_transcription")
+                            ?: json.optJSONObject("audioTranscription")
+                        if (rootTrans != null) {
+                            structuredDataJson = rootTrans.toString()
+                        }
+                    }
+
                     val transcript = sb.toString().trim()
                     if (transcript.isNotEmpty()) {
-                        Result.success(transcript)
+                        Result.success(
+                            GeminiTranscriptionResponse(
+                                transcript = transcript,
+                                structuredDataJson = structuredDataJson
+                            )
+                        )
                     } else {
                         Result.failure(Exception("Transcription returned empty response from model"))
                     }
@@ -165,7 +200,11 @@ class GeminiService {
         }
     }
 
-    private fun buildTranscriptionJson(base64Audio: String, mimeType: String): String {
+    private fun buildTranscriptionJson(
+        base64Audio: String,
+        mimeType: String,
+        isTranscribeModel: Boolean = false
+    ): String {
         val root = JSONObject()
 
         // System Instruction (verbatim as mandated)
@@ -202,6 +241,33 @@ class GeminiService {
         // Generation Config: temperature 0.0 (strictly deterministic)
         val config = JSONObject()
         config.put("temperature", 0.0)
+
+        if (isTranscribeModel) {
+            val transcriptionConfig = JSONObject().apply {
+                val mode = JSONObject().apply {
+                    put("type", "verbatim")
+                    put("diarization_mode", "speaker")
+                    val granularities = JSONArray().apply { put("word") }
+                    put("timestamp_granularities", granularities)
+                }
+                put("mode", mode)
+            }
+            config.put("transcription_config", transcriptionConfig)
+
+            // Also support camelCase for robustness across client parser versions
+            val transcriptionConfigCamel = JSONObject().apply {
+                val mode = JSONObject().apply {
+                    put("type", "verbatim")
+                    put("diarizationMode", "speaker")
+                    val granularities = JSONArray().apply { put("word") }
+                    put("timestampGranularities", granularities)
+                }
+                put("mode", mode)
+            }
+            config.put("transcriptionConfig", transcriptionConfigCamel)
+            root.put("generation_config", config)
+        }
+
         root.put("generationConfig", config)
 
         return root.toString()

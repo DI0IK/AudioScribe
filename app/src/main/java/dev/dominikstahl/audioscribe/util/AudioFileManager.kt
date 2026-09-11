@@ -106,16 +106,17 @@ object AudioFileManager {
 
         // Inspect header bytes
         val magicBytes = ByteArray(16)
+        var bytesRead = 0
         try {
-            file.inputStream().use { it.read(magicBytes) }
+            file.inputStream().use { bytesRead = it.read(magicBytes) }
         } catch (e: Exception) {
             Log.w(TAG, "Could not read magic bytes", e)
         }
 
-        val magicStr = String(magicBytes, Charsets.ISO_8859_1)
+        val magicStr = if (bytesRead > 0) String(magicBytes, 0, bytesRead, Charsets.ISO_8859_1) else ""
 
         // Ogg container (OggS) - Typical for WhatsApp voice notes (Opus in Ogg)
-        if (magicBytes.size >= 4 && magicBytes[0] == 'O'.code.toByte() &&
+        if (bytesRead >= 4 && magicBytes[0] == 'O'.code.toByte() &&
             magicBytes[1] == 'g'.code.toByte() &&
             magicBytes[2] == 'g'.code.toByte() &&
             magicBytes[3] == 'S'.code.toByte()) {
@@ -123,7 +124,7 @@ object AudioFileManager {
         }
 
         // RIFF WAV
-        if (magicBytes.size >= 4 && magicBytes[0] == 'R'.code.toByte() &&
+        if (bytesRead >= 4 && magicBytes[0] == 'R'.code.toByte() &&
             magicBytes[1] == 'I'.code.toByte() &&
             magicBytes[2] == 'F'.code.toByte() &&
             magicBytes[3] == 'F'.code.toByte()) {
@@ -131,7 +132,7 @@ object AudioFileManager {
         }
 
         // AMR (#!AMR)
-        if (magicBytes.size >= 5 && magicBytes[0] == '#'.code.toByte() &&
+        if (bytesRead >= 5 && magicBytes[0] == '#'.code.toByte() &&
             magicBytes[1] == '!'.code.toByte() &&
             magicBytes[2] == 'A'.code.toByte() &&
             magicBytes[3] == 'M'.code.toByte() &&
@@ -140,7 +141,7 @@ object AudioFileManager {
         }
 
         // MP3 (ID3 tag or sync frame 0xFF 0xFB)
-        if (magicBytes.size >= 3 && magicBytes[0] == 'I'.code.toByte() &&
+        if (bytesRead >= 3 && magicBytes[0] == 'I'.code.toByte() &&
             magicBytes[1] == 'D'.code.toByte() &&
             magicBytes[2] == '3'.code.toByte()) {
             return "audio/mp3"

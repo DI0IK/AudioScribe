@@ -90,7 +90,6 @@ fun ShareProcessingSheet(
     onOpenKeyDialog: () -> Unit,
     onRetry: () -> Unit,
     onRetryFallback: (() -> Unit)? = null,
-    onOpenMainApp: (() -> Unit)? = null,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 ) {
     val context = LocalContext.current
@@ -203,26 +202,15 @@ fun ShareProcessingSheet(
                                     )
                                 }
                             }
-
-                            // Preview playback toggle
-                            FilledTonalButton(
-                                onClick = {
-                                    speechSynthesizer.stop()
-                                    audioPlayer.playOrPause(state.metadata.file)
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("ready_preview_audio_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (playbackState.isPlaying) "Pause preview" else "Play preview",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (playbackState.isPlaying) "Pause" else "Preview", fontSize = 12.sp)
-                            }
                         }
                     }
+
+                    // Seekable Audio Player Bar
+                    AudioPlayerBar(
+                        audioFile = state.metadata.file,
+                        audioPlayer = audioPlayer,
+                        totalDurationFallbackMs = state.metadata.durationMs
+                    )
 
                     // Engine / Model info badge
                     Surface(
@@ -257,7 +245,7 @@ fun ShareProcessingSheet(
                         }
                     }
 
-                    // Primary Action: User manually starts transcription
+                    // Primary Action: User starts transcription
                     Button(
                         onClick = {
                             audioPlayer.stop()
@@ -294,20 +282,6 @@ fun ShareProcessingSheet(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Text("Cancel")
-                    }
-
-                    if (onOpenMainApp != null) {
-                        TextButton(
-                            onClick = {
-                                audioPlayer.stop()
-                                onOpenMainApp()
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("open_in_app_ready_button")
-                        ) {
-                            Text("Open in AudioScribe App")
-                        }
                     }
                 }
 
@@ -615,79 +589,53 @@ fun ShareProcessingSheet(
                             )
                         }
 
-                        // Audio controls row: Listen (Original) & Synthesize (TTS)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            // Listen to Original Recording
-                            FilledTonalButton(
-                                onClick = {
+                        // Read Aloud using On-Device Speech Synthesizer
+                        FilledTonalButton(
+                            onClick = {
+                                audioPlayer.stop()
+                                if (isSpeaking) {
                                     speechSynthesizer.stop()
-                                    audioPlayer.playOrPause(state.metadata.file)
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("preview_audio_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (playbackState.isPlaying) "Pause audio" else "Play audio",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (playbackState.isPlaying) "Pause" else "Audio", fontSize = 12.sp)
-                            }
-
-                            // Read Aloud using On-Device Speech Synthesizer
-                            FilledTonalButton(
-                                onClick = {
-                                    audioPlayer.stop()
+                                } else {
                                     speechSynthesizer.speak(state.transcript)
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("speak_transcript_button"),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = if (isSpeaking) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                            ) {
-                                Icon(
-                                    imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.RecordVoiceOver,
-                                    contentDescription = if (isSpeaking) "Stop Speaking" else "Speak Aloud",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (isSpeaking) "Stop" else "Speak", fontSize = 12.sp)
-                            }
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("speak_transcript_button"),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (isSpeaking) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest
+                            )
+                        ) {
+                            Icon(
+                                imageVector = if (isSpeaking) Icons.Default.Stop else Icons.Default.RecordVoiceOver,
+                                contentDescription = if (isSpeaking) "Stop Speaking" else "Speak Aloud",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (isSpeaking) "Stop" else "Speak", fontSize = 12.sp)
                         }
                     }
 
-                    // Clean, Selectable Transcript Text Box
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant,
-                                shape = RoundedCornerShape(14.dp)
-                            ),
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            SelectionContainer {
-                                Text(
-                                    text = state.transcript,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    lineHeight = 26.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.testTag("transcript_text_result")
-                                )
-                            }
-                        }
-                    }
+                    // Seekable Audio Player Bar
+                    AudioPlayerBar(
+                        audioFile = state.metadata.file,
+                        audioPlayer = audioPlayer,
+                        totalDurationFallbackMs = state.metadata.durationMs
+                    )
+
+                    // Rich Transcript View with Diarization, seek jumps, and Prose toggling
+                    RichTranscriptView(
+                        transcript = state.transcript,
+                        structuredDataJson = state.structuredDataJson,
+                        audioFile = state.metadata.file,
+                        audioPlayer = audioPlayer,
+                        onCopyText = { textToCopy ->
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("AudioScribe Transcript", textToCopy)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "Transcript copied to clipboard!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.testTag("transcript_text_result")
+                    )
 
                     // Quick Action Buttons
                     Row(
@@ -741,33 +689,18 @@ fun ShareProcessingSheet(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Share Text")
                         }
-                    }
 
-                    // Dismiss / Close button
-                    OutlinedButton(
-                        onClick = {
-                            speechSynthesizer.stop()
-                            onDismiss()
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("dismiss_result_button"),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Dismiss / Close")
-                    }
-
-                    if (onOpenMainApp != null) {
-                        TextButton(
+                        OutlinedButton(
                             onClick = {
                                 speechSynthesizer.stop()
-                                onOpenMainApp()
+                                onDismiss()
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("open_in_app_completed_button")
+                                .weight(0.9f)
+                                .testTag("dismiss_result_button"),
+                            shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Open in AudioScribe App")
+                            Text("Done")
                         }
                     }
                 }

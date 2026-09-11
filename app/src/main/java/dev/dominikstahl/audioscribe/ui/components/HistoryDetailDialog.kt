@@ -101,37 +101,20 @@ fun HistoryDetailDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Audio preview buttons row (Original recording and Speech Synthesizer read-aloud)
+                // Read-aloud Speak button if needed
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    if (audioFile != null) {
-                        FilledTonalButton(
-                            onClick = {
-                                speechSynthesizer.stop()
-                                audioPlayer.playOrPause(audioFile)
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (playbackState.isPlaying) "Pause Audio" else "Play Audio", fontSize = 13.sp)
-                        }
-                    }
-
-                    // Speech Synthesizer readout
                     FilledTonalButton(
                         onClick = {
                             audioPlayer.stop()
-                            speechSynthesizer.speak(record.transcript)
+                            if (isSpeaking) {
+                                speechSynthesizer.stop()
+                            } else {
+                                speechSynthesizer.speak(record.transcript)
+                            }
                         },
-                        modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.filledTonalButtonColors(
                             containerColor = if (isSpeaking) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest
@@ -143,39 +126,33 @@ fun HistoryDetailDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isSpeaking) "Stop Speech" else "Synthesize", fontSize = 13.sp)
+                        Text(if (isSpeaking) "Stop Speech" else "Read Aloud", fontSize = 12.sp)
                     }
                 }
 
-                // Selectable Transcript
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .border(
-                            1.dp,
-                            MaterialTheme.colorScheme.outlineVariant,
-                            RoundedCornerShape(12.dp)
-                        ),
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        SelectionContainer {
-                            Text(
-                                text = record.transcript,
-                                style = MaterialTheme.typography.bodyMedium,
-                                lineHeight = 22.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
+                // Audio Player with Seek / Scrubbing if local audio file is preserved
+                if (audioFile != null) {
+                    AudioPlayerBar(
+                        audioFile = audioFile,
+                        audioPlayer = audioPlayer,
+                        totalDurationFallbackMs = record.durationMs
+                    )
                 }
+
+                // Rich Transcript View (Diarization, timestamps seek, Prose toggle)
+                RichTranscriptView(
+                    transcript = record.transcript,
+                    structuredDataJson = record.structuredDataJson,
+                    audioFile = audioFile,
+                    audioPlayer = audioPlayer,
+                    onCopyText = { textToCopy ->
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("AudioScribe Transcript", textToCopy)
+                        clipboard.setPrimaryClip(clip)
+                        Toast.makeText(context, "Transcript copied to clipboard!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.testTag("history_transcript_text")
+                )
 
                 // Actions
                 Row(

@@ -31,7 +31,7 @@ private val LightColorScheme =
   )
 
 @Composable
-fun MyApplicationTheme(
+fun AudioScribeTheme(
   darkTheme: Boolean = isSystemInDarkTheme(),
   // Dynamic color is available on Android 12+
   dynamicColor: Boolean = true,
@@ -50,3 +50,14 @@ fun MyApplicationTheme(
 
   MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
 }
+
+/**
+ * Backward compatibility alias for tests.
+ */
+@Composable
+fun MyApplicationTheme(
+  darkTheme: Boolean = isSystemInDarkTheme(),
+  dynamicColor: Boolean = true,
+  content: @Composable () -> Unit,
+) = AudioScribeTheme(darkTheme = darkTheme, dynamicColor = dynamicColor, content = content)
+

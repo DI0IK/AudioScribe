@@ -30,6 +30,11 @@ class OnDeviceSpeechService(private val context: Context) {
         private const val TAG = "OnDeviceSpeechService"
         const val MODEL_NAME = "On-Device Speech Engine"
         private const val ATTEMPT_TIMEOUT_MS = 25000L
+
+        // Android SpeechRecognizer extended error constants
+        const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
+        const val ERROR_LANGUAGE_UNAVAILABLE = 13
+        const val ERROR_SERVER_ERROR = 14
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -74,11 +79,13 @@ class OnDeviceSpeechService(private val context: Context) {
             when (result1) {
                 is AttemptResult.Success -> return@withContext Result.success(result1.transcript)
                 is AttemptResult.Error -> {
-                    // Check if error is 12 (ERROR_LANGUAGE_NOT_SUPPORTED) or 13 (ERROR_LANGUAGE_UNAVAILABLE)
-                    if (result1.errorCode == 12 || result1.errorCode == 13 || result1.errorCode == SpeechRecognizer.ERROR_CLIENT) {
+                    // Check if error is ERROR_LANGUAGE_NOT_SUPPORTED or ERROR_LANGUAGE_UNAVAILABLE
+                    if (result1.errorCode == ERROR_LANGUAGE_NOT_SUPPORTED ||
+                        result1.errorCode == ERROR_LANGUAGE_UNAVAILABLE ||
+                        result1.errorCode == SpeechRecognizer.ERROR_CLIENT) {
                         Log.w(TAG, "On-device recognition failed with code ${result1.errorCode}. Falling back to system speech recognizer...")
                         onProgress("On-device model unavailable (error ${result1.errorCode}), switching to system speech recognizer...")
-                    } else if (result1.partialText != null && result1.partialText.isNotBlank()) {
+                    } else if (!result1.partialText.isNullOrBlank()) {
                         return@withContext Result.success(result1.partialText)
                     } else {
                         Log.w(TAG, "On-device failed (${result1.message}), falling back to system speech recognizer...")
@@ -99,12 +106,12 @@ class OnDeviceSpeechService(private val context: Context) {
         when (result2) {
             is AttemptResult.Success -> return@withContext Result.success(result2.transcript)
             is AttemptResult.Error -> {
-                if (result2.partialText != null && result2.partialText.isNotBlank()) {
+                if (!result2.partialText.isNullOrBlank()) {
                     return@withContext Result.success(result2.partialText)
                 }
 
-                // If error 12 occurred with specific locale, attempt without specifying language
-                if (result2.errorCode == 12 || result2.errorCode == 13) {
+                // If error 12/13 occurred with specific locale, attempt without specifying language
+                if (result2.errorCode == ERROR_LANGUAGE_NOT_SUPPORTED || result2.errorCode == ERROR_LANGUAGE_UNAVAILABLE) {
                     Log.w(TAG, "Locale not supported. Retrying with default system language...")
                     onProgress("Retrying with default speech language...")
                     val result3 = executeAttempt(
@@ -116,14 +123,14 @@ class OnDeviceSpeechService(private val context: Context) {
                     when (result3) {
                         is AttemptResult.Success -> return@withContext Result.success(result3.transcript)
                         is AttemptResult.Error -> {
-                            if (result3.partialText != null && result3.partialText.isNotBlank()) {
+                            if (!result3.partialText.isNullOrBlank()) {
                                 return@withContext Result.success(result3.partialText)
                             }
                         }
                     }
                 }
 
-                val finalErrorMsg = if (result2.errorCode == 12 || result2.errorCode == 13) {
+                val finalErrorMsg = if (result2.errorCode == ERROR_LANGUAGE_NOT_SUPPORTED || result2.errorCode == ERROR_LANGUAGE_UNAVAILABLE) {
                     "Speech recognition error ${result2.errorCode}: Offline voice pack is not installed on this device. Please enter a Gemini API key in Settings (Gemini 3.8 Flash) for fast, reliable transcription."
                 } else {
                     "Speech recognition error: ${result2.message}. Configuring a Gemini API key in Settings is recommended."
@@ -184,7 +191,7 @@ class OnDeviceSpeechService(private val context: Context) {
                         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                             if (!languageTag.isNullOrBlank()) {
-                                putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+                                setExtraLanguage(this, languageTag)
                             }
                             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
@@ -226,8 +233,9 @@ class OnDeviceSpeechService(private val context: Context) {
                                 Log.w(TAG, "SpeechRecognizer error: $error ($message)")
                                 cleanup()
 
-                                if (partialText != null && partialText!!.isNotBlank()) {
-                                    continuation.resume(AttemptResult.Success(partialText!!))
+                                val currentPartial = partialText
+                                if (!currentPartial.isNullOrBlank()) {
+                                    continuation.resume(AttemptResult.Success(currentPartial))
                                 } else if (error == SpeechRecognizer.ERROR_NO_MATCH) {
                                     continuation.resume(
                                         AttemptResult.Success("[Audio analyzed: No recognizable spoken words detected]")
@@ -237,7 +245,7 @@ class OnDeviceSpeechService(private val context: Context) {
                                         AttemptResult.Error(
                                             errorCode = error,
                                             message = message,
-                                            partialText = partialText
+                                            partialText = currentPartial
                                         )
                                     )
                                 }
@@ -247,10 +255,11 @@ class OnDeviceSpeechService(private val context: Context) {
                                 cleanup()
                                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 val text = matches?.firstOrNull()?.trim()
+                                val currentPartial = partialText
                                 if (!text.isNullOrBlank()) {
                                     continuation.resume(AttemptResult.Success(text))
-                                } else if (partialText != null && partialText!!.isNotBlank()) {
-                                    continuation.resume(AttemptResult.Success(partialText!!))
+                                } else if (!currentPartial.isNullOrBlank()) {
+                                    continuation.resume(AttemptResult.Success(currentPartial))
                                 } else {
                                     continuation.resume(
                                         AttemptResult.Success("[Audio analyzed: No recognizable spoken words detected]")
@@ -294,6 +303,10 @@ class OnDeviceSpeechService(private val context: Context) {
         )
     }
 
+    private fun setExtraLanguage(intent: Intent, languageTag: String) {
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
+    }
+
     private fun getSpeechErrorMessage(errorCode: Int): String {
         return when (errorCode) {
             SpeechRecognizer.ERROR_AUDIO -> "Audio recording/reading error"
@@ -305,9 +318,9 @@ class OnDeviceSpeechService(private val context: Context) {
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service is currently busy"
             SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Recognition server disconnected"
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected within timeout"
-            12 -> "Language not supported or offline voice pack not downloaded (Error 12)"
-            13 -> "Language unavailable offline (Error 13)"
-            14 -> "Speech recognition server error (Error 14)"
+            ERROR_LANGUAGE_NOT_SUPPORTED -> "Language not supported or offline voice pack not downloaded (Error $ERROR_LANGUAGE_NOT_SUPPORTED)"
+            ERROR_LANGUAGE_UNAVAILABLE -> "Language unavailable offline (Error $ERROR_LANGUAGE_UNAVAILABLE)"
+            ERROR_SERVER_ERROR -> "Speech recognition server error (Error $ERROR_SERVER_ERROR)"
             else -> "Speech recognition error code: $errorCode"
         }
     }

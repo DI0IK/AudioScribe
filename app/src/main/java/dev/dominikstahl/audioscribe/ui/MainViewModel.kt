@@ -23,7 +23,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 sealed class TranscriptionUiState {
-    object Idle : TranscriptionUiState()
+    data object Idle : TranscriptionUiState()
 
     data class Ready(
         val metadata: AudioMetadata,
@@ -46,7 +46,8 @@ sealed class TranscriptionUiState {
         val transcript: String,
         val recordId: Long,
         val modelUsed: String,
-        val isCached: Boolean = false
+        val isCached: Boolean = false,
+        val structuredDataJson: String? = null
     ) : TranscriptionUiState()
 
     data class Error(
@@ -111,14 +112,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Primary entry point when audio is received via Android's Share sheet.
-     * If an API key is set, transcribes using Gemini.
-     * If no API key is set, seamlessly activates the on-device speech engine fallback.
+     * Automatically checks the local cache first: if previously transcribed,
+     * instantly displays the completed transcript without requiring user interaction.
      */
     fun handleIncomingAudioUri(uri: Uri) {
         viewModelScope.launch {
             _transcriptionState.value = TranscriptionUiState.Preparing("Reading shared audio...")
             val result = AudioFileManager.processIncomingAudioUri(context, uri)
             result.onSuccess { metadata ->
+                // Auto-switch to cached transcript if identical audio was previously transcribed
+                if (metadata.fileHash.isNotBlank()) {
+                    val cached = dao.findByAudioHash(metadata.fileHash)
+                    if (cached != null) {
+                        Log.d("MainViewModel", "Auto-switching to cached transcript for hash: ${metadata.fileHash}")
+                        _transcriptionState.value = TranscriptionUiState.Completed(
+                            metadata = metadata,
+                            transcript = cached.transcript,
+                            recordId = cached.id,
+                            modelUsed = cached.modelUsed,
+                            isCached = true
+                        )
+                        return@launch
+                    }
+                }
+
                 val hasKey = secureKeyManager.hasApiKey()
                 val model = if (hasKey) secureKeyManager.getSelectedModel() else OnDeviceSpeechService.MODEL_NAME
                 _transcriptionState.value = TranscriptionUiState.Ready(
@@ -153,7 +170,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         transcript = cached.transcript,
                         recordId = cached.id,
                         modelUsed = cached.modelUsed,
-                        isCached = true
+                        isCached = true,
+                        structuredDataJson = cached.structuredDataJson
                     )
                     return@launch
                 }
@@ -179,25 +197,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 result.onSuccess { transcript ->
-                    val record = TranscriptionRecord(
-                        title = metadata.fileName,
-                        fileSize = metadata.sizeBytes,
-                        durationMs = metadata.durationMs,
-                        mimeType = metadata.mimeType,
-                        transcript = transcript,
-                        modelUsed = OnDeviceSpeechService.MODEL_NAME,
-                        localFilePath = metadata.file.absolutePath,
-                        audioHash = metadata.fileHash
-                    )
-                    val newId = dao.insertTranscription(record)
-
-                    _transcriptionState.value = TranscriptionUiState.Completed(
-                        metadata = metadata,
-                        transcript = transcript,
-                        recordId = newId,
-                        modelUsed = OnDeviceSpeechService.MODEL_NAME,
-                        isCached = false
-                    )
+                    saveRecordAndComplete(metadata, transcript, OnDeviceSpeechService.MODEL_NAME, null)
                 }.onFailure { error ->
                     _transcriptionState.value = TranscriptionUiState.Error(
                         metadata = metadata,
@@ -237,26 +237,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 )
 
-                result.onSuccess { transcript ->
-                    val record = TranscriptionRecord(
-                        title = metadata.fileName,
-                        fileSize = metadata.sizeBytes,
-                        durationMs = metadata.durationMs,
-                        mimeType = metadata.mimeType,
-                        transcript = transcript,
-                        modelUsed = model,
-                        localFilePath = metadata.file.absolutePath,
-                        audioHash = metadata.fileHash
-                    )
-                    val newId = dao.insertTranscription(record)
-
-                    _transcriptionState.value = TranscriptionUiState.Completed(
-                        metadata = metadata,
-                        transcript = transcript,
-                        recordId = newId,
-                        modelUsed = model,
-                        isCached = false
-                    )
+                result.onSuccess { response ->
+                    saveRecordAndComplete(metadata, response.transcript, model, response.structuredDataJson)
                 }.onFailure { error ->
                     _transcriptionState.value = TranscriptionUiState.Error(
                         metadata = metadata,
@@ -266,6 +248,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    private suspend fun saveRecordAndComplete(
+        metadata: AudioMetadata,
+        transcript: String,
+        modelUsed: String,
+        structuredDataJson: String? = null
+    ) {
+        val record = TranscriptionRecord(
+            title = metadata.fileName,
+            fileSize = metadata.sizeBytes,
+            durationMs = metadata.durationMs,
+            mimeType = metadata.mimeType,
+            transcript = transcript,
+            modelUsed = modelUsed,
+            localFilePath = metadata.file.absolutePath,
+            audioHash = metadata.fileHash,
+            structuredDataJson = structuredDataJson
+        )
+        val newId = dao.insertTranscription(record)
+
+        _transcriptionState.value = TranscriptionUiState.Completed(
+            metadata = metadata,
+            transcript = transcript,
+            recordId = newId,
+            modelUsed = modelUsed,
+            isCached = false,
+            structuredDataJson = structuredDataJson
+        )
     }
 
     fun speakTranscript(text: String) {
@@ -285,6 +296,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun dismissResult() {
+        transcriptionJob?.cancel()
+        transcriptionJob = null
         audioPlayer.stop()
         speechSynthesizer.stop()
         _transcriptionState.value = TranscriptionUiState.Idle
@@ -339,8 +352,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        audioPlayer.stop()
+        audioPlayer.release()
         speechSynthesizer.shutdown()
         transcriptionJob?.cancel()
+        transcriptionJob = null
     }
 }

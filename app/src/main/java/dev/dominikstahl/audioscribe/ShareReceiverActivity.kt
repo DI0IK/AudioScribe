@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -22,12 +21,12 @@ import dev.dominikstahl.audioscribe.ui.MainViewModel
 import dev.dominikstahl.audioscribe.ui.TranscriptionUiState
 import dev.dominikstahl.audioscribe.ui.components.ApiKeyDialog
 import dev.dominikstahl.audioscribe.ui.components.ShareProcessingSheet
-import dev.dominikstahl.audioscribe.ui.theme.MyApplicationTheme
+import dev.dominikstahl.audioscribe.ui.theme.AudioScribeTheme
 
 /**
  * Lightweight translucent activity handling the Android Share Target (ACTION_SEND).
  * It presents ONLY the slide-in bottom sheet over the sharing application without
- * opening the full AudioScribe main application.
+ * opening or bringing the full AudioScribe main application forward.
  */
 class ShareReceiverActivity : ComponentActivity() {
 
@@ -41,17 +40,10 @@ class ShareReceiverActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
-            MyApplicationTheme {
+            AudioScribeTheme {
                 ShareReceiverScreen(
                     viewModel = viewModel,
-                    onFinish = { finish() },
-                    onOpenMainApp = {
-                        val mainIntent = Intent(this@ShareReceiverActivity, MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        }
-                        startActivity(mainIntent)
-                        finish()
-                    }
+                    onFinish = { finish() }
                 )
             }
         }
@@ -81,10 +73,8 @@ class ShareReceiverActivity : ComponentActivity() {
             }
             if (streamUri != null) {
                 viewModel.handleIncomingAudioUri(streamUri)
-            } else if (intent.data != null) {
-                viewModel.handleIncomingAudioUri(intent.data!!)
             } else {
-                finish()
+                intent.data?.let { viewModel.handleIncomingAudioUri(it) } ?: finish()
             }
         } else if (Intent.ACTION_VIEW == action && intent.data != null) {
             viewModel.handleIncomingAudioUri(intent.data!!)
@@ -98,17 +88,11 @@ class ShareReceiverActivity : ComponentActivity() {
 @Composable
 fun ShareReceiverScreen(
     viewModel: MainViewModel,
-    onFinish: () -> Unit,
-    onOpenMainApp: () -> Unit
+    onFinish: () -> Unit
 ) {
     val transcriptionState by viewModel.transcriptionState.collectAsState()
     val isKeyDialogOpen by viewModel.isKeyDialogOpen.collectAsState()
     val currentModel by viewModel.currentModel.collectAsState()
-
-    // If the state becomes Idle after user interaction, close the activity
-    LaunchedEffect(transcriptionState) {
-        // Only finish on Idle if it was dismissed
-    }
 
     Box(
         modifier = Modifier
@@ -145,8 +129,7 @@ fun ShareReceiverScreen(
                     } else if (current is TranscriptionUiState.KeyRequired) {
                         viewModel.startTranscriptionForMetadata(current.metadata, forceFallback = true)
                     }
-                },
-                onOpenMainApp = onOpenMainApp
+                }
             )
         }
 
