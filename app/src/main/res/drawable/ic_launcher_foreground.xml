@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Glowing rounded card base behind glyph (within safe area 24..84) -->
+    <path
+        android:pathData="M34,26 L74,26 A12,12 0 0,1 86,38 L86,70 A12,12 0 0,1 74,82 L34,82 A12,12 0 0,1 22,70 L22,38 A12,12 0 0,1 34,26 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="22"
+                android:startY="26"
+                android:endX="86"
+                android:endY="82"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#38BDF8" />
+                <item android:offset="0.5" android:color="#6366F1" />
+                <item android:offset="1.0" android:color="#8B5CF6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Sound Waveform bars inside card -->
+    <!-- Bar 1 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M32,49 L36,49 A2,2 0 0,1 38,51 L38,57 A2,2 0 0,1 36,59 L32,59 A2,2 0 0,1 30,57 L30,51 A2,2 0 0,1 32,49 Z" />
+
+    <!-- Bar 2 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M41,43 L45,43 A2,2 0 0,1 47,45 L47,63 A2,2 0 0,1 45,65 L41,65 A2,2 0 0,1 39,63 L39,45 A2,2 0 0,1 41,43 Z" />
+
+    <!-- Bar 3 (Center tall) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M50,37 L54,37 A2,2 0 0,1 56,39 L56,69 A2,2 0 0,1 54,71 L50,71 A2,2 0 0,1 48,69 L48,39 A2,2 0 0,1 50,37 Z" />
+
+    <!-- Bar 4 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M59,42 L63,42 A2,2 0 0,1 65,44 L65,64 A2,2 0 0,1 63,66 L59,66 A2,2 0 0,1 57,64 L57,44 A2,2 0 0,1 59,42 Z" />
+
+    <!-- Bar 5 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M68,48 L72,48 A2,2 0 0,1 74,50 L74,58 A2,2 0 0,1 72,60 L68,60 A2,2 0 0,1 66,58 L66,50 A2,2 0 0,1 68,48 Z" />
+
+    <!-- AI Sparkle accent top right -->
+    <path
+        android:fillColor="#FACC15"
+        android:pathData="M75,27 L76.5,31 L80.5,32.5 L76.5,34 L75,38 L73.5,34 L69.5,32.5 L73.5,31 Z" />
+</vector>

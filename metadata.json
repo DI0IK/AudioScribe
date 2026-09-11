@@ -1,0 +1,6 @@
+{
+  "name": "AudioScribe",
+  "description": "BYOK audio transcription engine using Gemini API with Android Share intent integration",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
